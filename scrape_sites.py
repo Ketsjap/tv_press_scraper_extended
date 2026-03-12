@@ -1,4 +1,4 @@
-import requests
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 import json
 import os
@@ -22,14 +22,14 @@ client = OpenAI(api_key=OPENAI_KEY)
 
 def get_recent_links(site):
     print(f"🌍 Bezoeken: {site['name']}...")
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
 
     # --- SPECIALE LOGICA VOOR VTM (Sitemap Methode) ---
     if site['name'] == "VTM":
         print(f"   🗺️ Gebruik sitemap route om bot-detectie te omzeilen...")
         try:
             sitemap_url = f"{site['url'].rstrip('/')}/sitemap.xml"
-            response = requests.get(sitemap_url, headers=headers, timeout=15)
+            # Gebruik curl_cffi met Chrome impersonation
+            response = requests.get(sitemap_url, impersonate="chrome", timeout=15)
 
             if response.status_code != 200:
                 print(f"   ❌ Sitemap niet bereikbaar (Status {response.status_code})")
@@ -57,7 +57,8 @@ def get_recent_links(site):
 
     # --- STANDAARD LOGICA VOOR ANDERE SITES (BeautifulSoup) ---
     try:
-        response = requests.get(site['url'], headers=headers, timeout=15)
+        # Gebruik curl_cffi met Chrome impersonation
+        response = requests.get(site['url'], impersonate="chrome", timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
 
         links = set()
@@ -81,8 +82,8 @@ def get_recent_links(site):
 
 def extract_article_content(url):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-        response = requests.get(url, headers=headers, timeout=15)
+        # Gebruik curl_cffi met Chrome impersonation
+        response = requests.get(url, impersonate="chrome", timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
 
         article_node = soup.find('article')
