@@ -6,10 +6,18 @@ import re
 from datetime import datetime
 from openai import OpenAI
 import time
+import sys
 
 # --- CONFIGURATIE ---
 OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
 JSON_FILE = "press.json"
+
+# Haal de ScraperAPI key 100% veilig uit GitHub Secrets
+SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY")
+
+if not SCRAPERAPI_KEY:
+    print("🚨 FATALE FOUT: SCRAPERAPI_KEY is niet ingesteld in de GitHub Secrets!")
+    sys.exit(1) # Stop het script direct als de sleutel ontbreekt
 
 SITES = [
     { "name": "VTM", "url": "https://communicatie.vtm.be/", "base": "https://communicatie.vtm.be" },
@@ -20,24 +28,38 @@ SITES = [
 
 client = OpenAI(api_key=OPENAI_KEY)
 
+# --- SLIMME OPHAAL FUNCTIE ---
+def fetch_page(url, is_vtm=False):
+    """Kiest automatisch de juiste download-methode op basis van de zender."""
+    if is_vtm:
+        # Gebruik ScraperAPI mét JavaScript rendering voor VTM
+        print(f"   🤖 [ScraperAPI] Omzeilt Cloudflare voor: {url}")
+        scraper_url = "http://api.scraperapi.com"
+        params = {
+            "api_key": SCRAPERAPI_KEY,
+            "url": url,
+            "render": "true" 
+        }
+        return requests.get(scraper_url, params=params, timeout=60) 
+    else:
+        # Gratis en snelle methode voor de rest
+        return requests.get(url, impersonate="chrome", timeout=15)
+
 def get_recent_links(site):
     print(f"🌍 Bezoeken: {site['name']}...")
+    is_vtm = (site['name'] == "VTM")
 
     # --- SPECIALE LOGICA VOOR VTM (Sitemap Methode) ---
-    if site['name'] == "VTM":
+    if is_vtm:
         print(f"   🗺️ Gebruik sitemap route om bot-detectie te omzeilen...")
         try:
             sitemap_url = f"{site['url'].rstrip('/')}/sitemap.xml"
-            # Gebruik curl_cffi met Chrome impersonation
-            response = requests.get(sitemap_url, impersonate="chrome", timeout=15)
-            print(f"   [DEBUG] Sitemap Status Code: {response.status_code}")
-            print(f"   [DEBUG] Sitemap Response (eerste 250 tekens): {response.text[:250]}")
+            response = fetch_page(sitemap_url, is_vtm=True)
 
             if response.status_code != 200:
                 print(f"   ❌ Sitemap niet bereikbaar (Status {response.status_code})")
                 return []
 
-            # Gebruik regex om alle <loc> links uit de XML te halen
             all_links = re.findall(r'<loc>(.*?)</loc>', response.text)
 
             article_links = []
@@ -46,9 +68,7 @@ def get_recent_links(site):
                 if len(slug) > 20 and not any(x in link for x in ["/login", "/search", "/media"]):
                     article_links.append(link)
 
-            # Pak de laatste 10 en daarvan de unieke 5
             found_list = list(dict.fromkeys(article_links))[-10:]
-            # Neem de laatste 5 unieke items
             final_links = found_list[-5:]
             print(f"   -> {len(final_links)} links gevonden via sitemap.")
             return final_links
@@ -59,8 +79,7 @@ def get_recent_links(site):
 
     # --- STANDAARD LOGICA VOOR ANDERE SITES (BeautifulSoup) ---
     try:
-        # Gebruik curl_cffi met Chrome impersonation
-        response = requests.get(site['url'], impersonate="chrome", timeout=15)
+        response = fetch_page(site['url'], is_vtm=False)
         soup = BeautifulSoup(response.text, 'html.parser')
 
         links = set()
@@ -82,17 +101,9 @@ def get_recent_links(site):
         print(f"   ❌ Fout bij ophalen links: {e}")
         return []
 
-def extract_article_content(url):
+def extract_article_content(url, is_vtm=False):
     try:
-        # Gebruik curl_cffi met Chrome impersonation
-        response = requests.get(url, impersonate="chrome", timeout=15)
-        # --- DEBUG REGELS ---
-        print(f"   [DEBUG] Artikel Status Code: {response.status_code}")
-        if "cloudflare" in response.text.lower() or "just a moment" in response.text.lower() or "turnstile" in response.text.lower():
-            print("   🚨 [DEBUG] CLOUDFLARE BLOKKADE GEDETECTEERD OP DE ARTIKELPAGINA!")
-        elif not soup.find('article') and not soup.find('div', class_=re.compile(r'Story_container')):
-            print(f"   [DEBUG] Geen artikel gevonden. Ruwe HTML (eerste 500 tekens): {response.text[:500]}")
-        # --------------------
+        response = fetch_page(url, is_vtm=is_vtm)
         soup = BeautifulSoup(response.text, 'html.parser')
 
         article_node = soup.find('article')
@@ -176,11 +187,13 @@ def main():
 
     for site in SITES:
         links = get_recent_links(site)
+        is_vtm = (site['name'] == "VTM")
+        
         for link in links:
             if link in existing_urls: continue
 
             print(f"   🔍 Scrapen: {link}")
-            content = extract_article_content(link)
+            content = extract_article_content(link, is_vtm=is_vtm)
 
             if content and len(content['tekst']) > 100:
                 meta = analyze_metadata(content['titel'], content['tekst'], link, site['name'])
@@ -210,7 +223,6 @@ def main():
 
     if new_entries:
         updated_data = new_entries + existing_data
-        # Houd alleen de 100 meest recente items
         with open(JSON_FILE, 'w', encoding='utf-8') as f:
             json.dump(updated_data[:100], f, indent=2, ensure_ascii=False)
         print(f"💾 {len(new_entries)} items opgeslagen!")
