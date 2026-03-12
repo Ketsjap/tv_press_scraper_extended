@@ -22,33 +22,58 @@ client = OpenAI(api_key=OPENAI_KEY)
 
 def get_recent_links(site):
     print(f"🌍 Bezoeken: {site['name']}...")
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+
+    # --- SPECIALE LOGICA VOOR VTM (Sitemap Methode) ---
+    if site['name'] == "VTM":
+        print(f"   🗺️ Gebruik sitemap route om bot-detectie te omzeilen...")
+        try:
+            sitemap_url = f"{site['url'].rstrip('/')}/sitemap.xml"
+            response = requests.get(sitemap_url, headers=headers, timeout=15)
+
+            if response.status_code != 200:
+                print(f"   ❌ Sitemap niet bereikbaar (Status {response.status_code})")
+                return []
+
+            # Gebruik regex om alle <loc> links uit de XML te halen
+            all_links = re.findall(r'<loc>(.*?)</loc>', response.text)
+
+            article_links = []
+            for link in all_links:
+                slug = link.replace(site['base'], "").strip("/")
+                if len(slug) > 20 and not any(x in link for x in ["/login", "/search", "/media"]):
+                    article_links.append(link)
+
+            # Pak de laatste 10 en daarvan de unieke 5
+            found_list = list(dict.fromkeys(article_links))[-10:]
+            # Neem de laatste 5 unieke items
+            final_links = found_list[-5:]
+            print(f"   -> {len(final_links)} links gevonden via sitemap.")
+            return final_links
+
+        except Exception as e:
+            print(f"   ❌ Fout bij VTM sitemap: {e}")
+            return []
+
+    # --- STANDAARD LOGICA VOOR ANDERE SITES (BeautifulSoup) ---
     try:
-        # Gebruik een 'echte' browser User-Agent
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         response = requests.get(site['url'], headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        
+
         links = set()
         for a in soup.find_all('a', href=True):
             href = a['href']
-            # Filter op typische artikel-structuren, negeer systeem-links
             ignore_terms = ["/login", "/subscribe", "/media", "/search", "javascript", "mailto", "privacy", "cookie", "linkedin", "facebook", "twitter"]
-            
             if any(x in href.lower() for x in ignore_terms): continue
-            
-            # Maak link compleet
             if href.startswith("/"): href = site['base'] + href
-            
-            # Alleen links die op het domein zelf blijven
+
             if site['base'] in href:
-                # Check of het een "diepe" link is (niet de homepage zelf)
                 slug = href.replace(site['base'], "")
-                if len(slug) > 20: # Korte links zijn vaak menu items
+                if len(slug) > 20:
                     links.add(href)
-        
-        # Pak de eerste 5 unieke links
+
         found_list = list(links)[:5]
-        print(f"   -> {len(links)} links gevonden. We checken: {[l.split('/')[-1][:20] for l in found_list]}")
+        print(f"   -> {len(found_list)} links gevonden.")
         return found_list
     except Exception as e:
         print(f"   ❌ Fout bij ophalen links: {e}")
@@ -59,45 +84,33 @@ def extract_article_content(url):
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 🔥 CRUCIAAL: Zoek de <article> tag. 
-        # In de code die je stuurde staat alles binnen <article>.
-        # Alles daarbuiten (zoals 'Meest recente verhalen') negeren we.
+
         article_node = soup.find('article')
-        
-        # Fallback als er geen article tag is (zou niet mogen bij Prezly)
-        if not article_node: 
+        if not article_node:
             article_node = soup.find('div', class_=re.compile(r'Story_container'))
-        
+
         if not article_node:
             print("   ⚠️ Geen artikel-content gevonden.")
             return None
 
-        # 1. Titel (H1 staat meestal in de article)
         titel_tag = article_node.find('h1')
         titel = titel_tag.get_text(strip=True) if titel_tag else "Geen titel"
 
-        # 2. Datum
         datum_pub = datetime.now().strftime("%Y-%m-%d")
-        # Soms staat datum net buiten de article in de header wrapper
-        datum_tag = soup.find('time') 
+        datum_tag = soup.find('time')
         if datum_tag and datum_tag.has_attr('datetime'):
             datum_pub = datum_tag['datetime'][:10]
 
-        # 3. Schoonmaak van het artikel
         for tag in article_node(["script", "style", "button", "iframe", "svg", "noscript"]):
             tag.decompose()
 
-        # 4. Tekst extractie (Paragrafen en kopjes)
         text_content = []
         for p in article_node.find_all(['p', 'h2', 'h3', 'li']):
             text = p.get_text(strip=True)
-            # Filter boilerplates
             if len(text) > 15 and "Niet voor publicatie" not in text and "Persverantwoordelijke" not in text:
                 text_content.append(text)
-        
+
         full_text = "\n\n".join(text_content)
-        
         return { "titel": titel, "tekst": full_text, "datum_publicatie": datum_pub }
 
     except Exception as e:
@@ -105,28 +118,26 @@ def extract_article_content(url):
         return None
 
 def analyze_metadata(titel, tekst, url, source):
-    # Als tekst te kort is, heeft het geen zin
     if len(tekst) < 50: return None
-
     print(f"   🤖 AI Analyseert...")
-    
+
     prompt = f"""
     Bron: {source}
     Titel: {titel}
     Tekst: {tekst[:4000]}
-    
+
     TAAK:
     1. Gaat dit over een TV-PROGRAMMA?
     2. Is het voor een SPECIFIEKE AFLEVERING (type: "episode") of ALGEMENE info/SEIZOEN (type: "season")?
     3. Zoek de datum van de uitzending in de tekst.
-    
+
     GEEF JSON:
     {{
-      "programma_titel": "Titel van het programma (zonder 'seizoen x')",
+      "programma_titel": "Titel van het programma",
       "match_type": "episode" of "season",
-      "uitzend_datum": "YYYY-MM-DD" of null (Als er staat 'vanaf 2 maart', vul 202X-03-02 in. Als er staat 'vanavond' en publicatiedatum is vandaag, vul vandaag in.),
+      "uitzend_datum": "YYYY-MM-DD" of null,
       "korte_intro": "Samenvatting (2-3 zinnen)",
-      "ignore": false (zet true als dit GEEN tv-nieuws is)
+      "ignore": false
     }}
     """
     try:
@@ -142,25 +153,25 @@ def main():
     existing_data = []
     if os.path.exists(JSON_FILE):
         try:
-            with open(JSON_FILE, 'r', encoding='utf-8') as f: 
+            with open(JSON_FILE, 'r', encoding='utf-8') as f:
                 content = f.read()
                 if content: existing_data = json.loads(content)
-        except: existing_data = []
-    
-    # We slaan de URL op om dubbels te voorkomen
+        except: 
+            existing_data = []
+
     existing_urls = {item.get('original_url') for item in existing_data}
     new_entries = []
-    
+
     print(f"📂 Huidige database bevat {len(existing_data)} items.")
 
     for site in SITES:
         links = get_recent_links(site)
         for link in links:
             if link in existing_urls: continue
-            
+
             print(f"   🔍 Scrapen: {link}")
             content = extract_article_content(link)
-            
+
             if content and len(content['tekst']) > 100:
                 meta = analyze_metadata(content['titel'], content['tekst'], link, site['name'])
                 if meta and not meta.get("ignore"):
@@ -184,11 +195,12 @@ def main():
                     print("   ❌ AI: Irrelevant.")
             else:
                 print(f"   ⚠️ Te weinig tekst gevonden of leeg artikel.")
-            
+
             time.sleep(1)
 
     if new_entries:
         updated_data = new_entries + existing_data
+        # Houd alleen de 100 meest recente items
         with open(JSON_FILE, 'w', encoding='utf-8') as f:
             json.dump(updated_data[:100], f, indent=2, ensure_ascii=False)
         print(f"💾 {len(new_entries)} items opgeslagen!")
