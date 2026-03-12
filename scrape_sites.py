@@ -30,6 +30,8 @@ def get_recent_links(site):
             sitemap_url = f"{site['url'].rstrip('/')}/sitemap.xml"
             # Gebruik curl_cffi met Chrome impersonation
             response = requests.get(sitemap_url, impersonate="chrome", timeout=15)
+            print(f"   [DEBUG] Sitemap Status Code: {response.status_code}")
+            print(f"   [DEBUG] Sitemap Response (eerste 250 tekens): {response.text[:250]}")
 
             if response.status_code != 200:
                 print(f"   ❌ Sitemap niet bereikbaar (Status {response.status_code})")
@@ -84,6 +86,13 @@ def extract_article_content(url):
     try:
         # Gebruik curl_cffi met Chrome impersonation
         response = requests.get(url, impersonate="chrome", timeout=15)
+        # --- DEBUG REGELS ---
+        print(f"   [DEBUG] Artikel Status Code: {response.status_code}")
+        if "cloudflare" in response.text.lower() or "just a moment" in response.text.lower() or "turnstile" in response.text.lower():
+            print("   🚨 [DEBUG] CLOUDFLARE BLOKKADE GEDETECTEERD OP DE ARTIKELPAGINA!")
+        elif not soup.find('article') and not soup.find('div', class_=re.compile(r'Story_container')):
+            print(f"   [DEBUG] Geen artikel gevonden. Ruwe HTML (eerste 500 tekens): {response.text[:500]}")
+        # --------------------
         soup = BeautifulSoup(response.text, 'html.parser')
 
         article_node = soup.find('article')
